@@ -10,11 +10,12 @@
 // to buffer some command outputs, might be small
 #define OUTPUT_BUFFER_SIZE 1000
 #define DEFAULT_GPG_RECIPIENT "sometest"
+#define CONFIG_FILENAME "open.conf"
 
 #define TRUE 1
 #define FALSE 0
 
-char EncryptDecryptErrorMsg[STRING_SIZE] = { 0 };
+char CurrentErrorMessage[STRING_SIZE] = { 0 };
 
 typedef struct {
 	char key[STRING_SIZE];
@@ -34,7 +35,6 @@ char parse_line(KeyValue * kv, char *line)
 
 	while (*c != '\0') {
 		if (*c == '=') {
-			// switch to value
 			if (reading_value) {
 				*pointer++ = *c;
 			}
@@ -121,12 +121,38 @@ const char *get_filename_ext(const char *filename)
 	return dot;
 }
 
+// TODO make this better
+char check_url_simple(char *url)
+{
+	char *u = url;
+	char *should_match = "http.://";
+	char *s = should_match;
+	while (*u != '\0' && *s != '\0') {
+		if (*s != '.' && *u != *s) {
+			return FALSE;
+		}
+		u++;
+		s++;
+	}
+	return *s == '\0';
+}
+
 char get_filetype(char *filetype, char *filename)
 {
+	if (check_url_simple(filename)) {
+		strcpy(filetype, "URL");
+		return TRUE;
+	}
+
 	char buffer[OUTPUT_BUFFER_SIZE] = { 0 };
 	sprintf(buffer, "file -b \"%s\"", filename);
 
 	if (run_save_stdout(buffer, filetype) != 0) {
+		return FALSE;
+	}
+	// TODO this is not an error from file? maybe detect filetype in some other way
+	// TODO maybe instead of relying on `file`, just use extensions?
+	if (strstr(filetype, "No such file or directory")) {
 		return FALSE;
 	}
 
@@ -141,6 +167,8 @@ int match_filename_with_config(Config config, char *filename)
 	char filetype[OUTPUT_BUFFER_SIZE] = { 0 };
 	if (!get_filetype(filetype, filename)) {
 		printf("ERROR: failed to get filetype from %s\n", filename);
+		// TODO make this error general or find a better way to do this
+		strcpy(CurrentErrorMessage, "Failed to shred tmp file");
 		return -1;
 	}
 
@@ -158,7 +186,10 @@ int match_filename_with_config(Config config, char *filename)
 
 char get_config_filepath(char *output)
 {
-	char *path_prefix = getenv("HOME");
+	sprintf(output, "/etc/%s", CONFIG_FILENAME);
+	if (access(output, F_OK) == 0) {
+		return TRUE;
+	}
 
 	char *path_suffixs[3] = {
 		".config",
@@ -166,10 +197,9 @@ char get_config_filepath(char *output)
 	};
 
 	for (int i = 0; i < 3; i++) {
-		char *config_filename = "config.cfg";
 		// TODO it returns something, check that
-		sprintf(output, "%s/%s/%s", path_prefix, path_suffixs[i],
-			config_filename);
+		sprintf(output, "%s/%s/%s", getenv("HOME"), path_suffixs[i],
+			CONFIG_FILENAME);
 		if (access(output, F_OK) == 0) {
 			return TRUE;
 		}
@@ -206,9 +236,6 @@ char md5_hash_filepath(char *output_buffer, char *filepath)
 	return TRUE;
 }
 
-/*
- * returns false if it doesn't find the config to open filepath
- */
 char format_command_open_file(char *final_command, Config config,
 			      char *filepath)
 {
@@ -230,7 +257,7 @@ char decrypt_reencrypt_pgp(Config config, char *filepath)
 {
 	char tmp_filepath[STRING_SIZE] = { 0 };
 	if (!mktemp_file(tmp_filepath)) {
-		strcpy(EncryptDecryptErrorMsg, "Failed to create tmp file");
+		strcpy(CurrentErrorMessage, "Failed to create tmp file");
 		return FALSE;
 	}
 	printf("mktemp: %s\n", tmp_filepath);
@@ -241,34 +268,32 @@ char decrypt_reencrypt_pgp(Config config, char *filepath)
 	// TODO check output of sprintf
 	sprintf(cmd_buffer, "gpg -d %s > %s", filepath, tmp_filepath);
 	if (system(cmd_buffer) != 0) {
-		strcpy(EncryptDecryptErrorMsg, "Failed to decrypt file");
+		strcpy(CurrentErrorMessage, "Failed to decrypt file");
 		return FALSE;
 	}
 
 	char hash_original[STRING_SIZE] = { 0 };
 	if (!md5_hash_filepath(hash_original, tmp_filepath)) {
-		strcpy(EncryptDecryptErrorMsg,
-		       "Failed to get original file hash");
+		strcpy(CurrentErrorMessage, "Failed to get original file hash");
 		// TODO either delete the file or print this error as warning
 		return FALSE;
 	}
 
 	char command[OUTPUT_BUFFER_SIZE] = { 0 };
 	if (!format_command_open_file(command, config, tmp_filepath)) {
-		strcpy(EncryptDecryptErrorMsg,
+		strcpy(CurrentErrorMessage,
 		       "Failed to format command to open decrypted file");
 		return FALSE;
 	}
 
 	if (run_command(command) != 0) {
-		strcpy(EncryptDecryptErrorMsg, "Failed to open decrypted file");
+		strcpy(CurrentErrorMessage, "Failed to open decrypted file");
 		return FALSE;
 	}
 
 	char hash_updated[STRING_SIZE] = { 0 };
 	if (!md5_hash_filepath(hash_updated, tmp_filepath)) {
-		strcpy(EncryptDecryptErrorMsg,
-		       "Failed to get updated file hash");
+		strcpy(CurrentErrorMessage, "Failed to get updated file hash");
 		// TODO either delete the file or print this error as warning
 		return FALSE;
 	}
@@ -278,15 +303,14 @@ char decrypt_reencrypt_pgp(Config config, char *filepath)
 		sprintf(cmd_buffer, "gpg -e -r %s -o %s %s",
 			DEFAULT_GPG_RECIPIENT, filepath, tmp_filepath);
 		if (system(cmd_buffer) != 0) {
-			strcpy(EncryptDecryptErrorMsg,
-			       "Failed to reencrypt file");
+			strcpy(CurrentErrorMessage, "Failed to reencrypt file");
 			return FALSE;
 		}
 	}
 
 	sprintf(cmd_buffer, "shred -u %s", tmp_filepath);
 	if (system(cmd_buffer) != 0) {
-		strcpy(EncryptDecryptErrorMsg, "Failed to shred tmp file");
+		strcpy(CurrentErrorMessage, "Failed to shred tmp file");
 		return FALSE;
 	}
 
@@ -315,7 +339,7 @@ int main(int argn, char **argv)
 
 	if (argn == 3 && strcmp("-d", argv[1]) == 0) {
 		if (!decrypt_reencrypt_pgp(config, argv[2])) {
-			printf("ERROR: %s\n", EncryptDecryptErrorMsg);
+			printf("ERROR: %s\n", CurrentErrorMessage);
 			return 1;
 		}
 		return 0;
