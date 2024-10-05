@@ -247,7 +247,7 @@ char format_command_open_file(char *final_command, Config config,
 	printf("Matched config: key=%s value=%s\n",
 	       config.key_values[config_index].key,
 	       config.key_values[config_index].value);
-	sprintf(final_command, "%s %s", config.key_values[config_index].value,
+	sprintf(final_command, "%s '%s'", config.key_values[config_index].value,
 		filepath);
 
 	return TRUE;
@@ -266,7 +266,7 @@ char decrypt_reencrypt_pgp(Config config, char *filepath)
 	// maybe I need to change something here
 	char cmd_buffer[STRING_SIZE * 2] = { 0 };
 	// TODO check output of sprintf
-	sprintf(cmd_buffer, "gpg -d %s > %s", filepath, tmp_filepath);
+	sprintf(cmd_buffer, "gpg -d '%s' > %s", filepath, tmp_filepath);
 	if (system(cmd_buffer) != 0) {
 		strcpy(CurrentErrorMessage, "Failed to decrypt file");
 		return FALSE;
@@ -300,7 +300,7 @@ char decrypt_reencrypt_pgp(Config config, char *filepath)
 
 	if (strcmp(hash_original, hash_updated) != 0) {
 		// TODO it asks everytime to replace original file
-		sprintf(cmd_buffer, "gpg -e -r %s -o %s %s",
+		sprintf(cmd_buffer, "gpg -e -r %s -o '%s' %s",
 			DEFAULT_GPG_RECIPIENT, filepath, tmp_filepath);
 		if (system(cmd_buffer) != 0) {
 			strcpy(CurrentErrorMessage, "Failed to reencrypt file");
